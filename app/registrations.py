@@ -2,9 +2,11 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db_session import get_session
+from app.db_session import find_event, get_session
+from app.models import Registration, User
 
 
 router = APIRouter()
@@ -14,8 +16,28 @@ class RegistrationInput(BaseModel):
     user_id: int
 
 
+def taken_slots(session: Session, event_id: int) -> int:
+    """Conta quantas inscrições o evento já tem."""
+    query = select(func.count()).select_from(Registration).where(Registration.event_id == event_id)
+    return session.scalar(query)
+
+
 @router.post("/events/{event_id}/registrations", status_code=201)
 def register(event_id: int, data: RegistrationInput, session: Session = Depends(get_session)):
-    # Atividade 3: verifique evento, usuário, duplicidade e vagas. Só então
-    # grave Registration e responda com event_id e user_id.
-    raise HTTPException(status_code=501, detail="Inscrição ainda não implementada")
+    event = find_event(session, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Evento não encontrado")
+    if session.get(User, data.user_id) is None:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    duplicate = select(Registration).where(
+        Registration.event_id == event_id, Registration.user_id == data.user_id
+    )
+    if session.scalar(duplicate) is not None:
+        raise HTTPException(status_code=409, detail="Usuário já inscrito neste evento")
+    if taken_slots(session, event_id) >= event.capacity:
+        raise HTTPException(status_code=409, detail="Evento lotado")
+
+    session.add(Registration(event_id=event_id, user_id=data.user_id))
+    session.commit()
+    return {"event_id": event_id, "user_id": data.user_id}
